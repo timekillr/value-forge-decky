@@ -1,0 +1,15 @@
+{
+  "name": "Value Forge",
+  "author": "JC / timekillr · based on Memory Deck by Camzie99 and contributors",
+  "flags": [
+    "root"
+  ],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "utility",
+      "memory"
+    ],
+    "description": "Save named address groups for the current game session. Edit members independently and refresh values on reopening."
+  }
+}
