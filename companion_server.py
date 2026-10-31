@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, parse_qs
 
 expected_session = contextvars.ContextVar('companion_session', default=None)
 PROTOCOL = 1
-VERSION = '0.6.0'
+VERSION = '0.7.0'
 PORT = 52881
 
 
@@ -225,7 +225,8 @@ class CompanionServer:
                    'rename_group': self.plugin.rename_group, 'remove_group': self.plugin.remove_group,
                    'move_entry': self.plugin.move_entry, 'rename_entry': self.plugin.rename_entry,
                    'remove_entry': self.plugin.remove_entry, 'write_entry': self.plugin.write_entry,
-                   'write_group': self.plugin.write_group, 'freeze_entry': self.plugin.freeze_entry}
+                   'write_group': self.plugin.write_group, 'write_results': self.plugin.write_results,
+                   'freeze_entry': self.plugin.freeze_entry}
         method, args, request_id = data.get('method'), data.get('args', {}), data.get('request_id')
         if not isinstance(method, str) or method not in methods or not isinstance(args, dict):
             raise ApiError(400, 'Unsupported companion command.')

@@ -1,6 +1,6 @@
 {
   "name": "memory-deck-session",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Value Forge: search memory and organize named address groups for your running game session.",
   "type": "module",
   "license": "GPL-3.0-only",

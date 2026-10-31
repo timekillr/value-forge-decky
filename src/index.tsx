@@ -21,8 +21,10 @@ interface GroupWriteReport {
 interface State {
   session: { id: string; pid: number; name: string; entries: Entry[]; groups: Group[] } | null;
   alive: boolean; storage_warning: string | null; group_write?: GroupWriteReport | null;
-  scan: { kind: string; has_scan: boolean; count: number; results: Match[]; operator: string; input: string; busy: boolean; progress?: number };
+  quick_write?: QuickWriteReport | null;
+  scan: { id: string; kind: string; has_scan: boolean; count: number; results: Match[]; operator: string; input: string; busy: boolean; progress?: number };
 }
+type QuickWriteReport = Pick<GroupWriteReport, 'value' | 'total' | 'written' | 'failed' | 'updated_at'>;
 interface Process { id: string; pid: number; name: string; command: string }
 const api = {
   state: callable<[refresh: boolean], State>('get_state'),
@@ -38,6 +40,7 @@ const api = {
   remove: callable<[id: string], State>('remove_entry'),
   write: callable<[id: string, value: string], State>('write_entry'),
   writeGroup: callable<[id: string, value: string], State>('write_group'),
+  writeResults: callable<[addresses: Address[], value: string, sessionId: string, scanId: string], State>('write_results'),
   freeze: callable<[id: string, enabled: boolean], State>('freeze_entry'),
 };
 const types = ['int32', 'uint32', 'float32', 'float64', 'int8', 'uint8', 'int16', 'uint16', 'int64', 'uint64'];
@@ -56,7 +59,8 @@ type Tab = 'saved' | 'scan' | 'process';
 let lastTab: Tab = 'saved';
 let processChoice: Process | null = null;
 let processCache: Process[] = [];
-type Form = { mode: 'save'; addresses: Address[] } | { mode: 'edit'; entry: Entry } | { mode: 'group'; group: Group } | { mode: 'group-write'; group: Group } | null;
+type Form = { mode: 'save'; addresses: Address[] } | { mode: 'edit'; entry: Entry } | { mode: 'group'; group: Group } | { mode: 'group-write'; group: Group }
+  | { mode: 'quick'; addresses: Address[]; sessionId: string; scanId: string; anchor: string | null } | null;
 
 const styles = `
 .mds { color:#e6edf3; font-size:14px; padding-bottom:20px; }
@@ -112,6 +116,7 @@ function Content() {
   const [input, setInput] = useState('0');
   const [page, setPage] = useState(0);
   const [form, setForm] = useState<Form>(null);
+  const [quickReport, setQuickReport] = useState<QuickWriteReport | null>(null);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [manualAddress, setManualAddress] = useState('');
@@ -127,12 +132,18 @@ function Content() {
   const processRequest = useRef(0);
   const attachedSession = useRef<string | undefined>(undefined);
   const searchSnapshot = useRef<string | null>(null);
+  const resultSnapshot = useRef<string | null>(null);
   attachedSession.current = state?.session?.id;
   useEffect(() => { lastTab = tab; }, [tab]);
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; requestVersion.current++; processRequest.current++; }; }, []);
   const apply = useCallback((next: State) => {
     setState(next);
+    setForm(previous => previous?.mode === 'quick' && (previous.sessionId !== next.session?.id || previous.scanId !== next.scan.id) ? null : previous);
+    const resultIdentity = JSON.stringify([next.session?.id, next.scan.id]);
+    if (resultSnapshot.current !== resultIdentity) {
+      resultSnapshot.current = resultIdentity; setSelectedMatches([]); setResultTypes({});
+    } else setSelectedMatches(previous => previous.filter(address => next.scan.results.some(row => row.address === address)));
     // A values-only refresh must not overwrite a search field the user is
     // currently editing, for example when a Steam dropdown closes.
     const snapshot = JSON.stringify([next.session?.id, next.scan.kind, next.scan.has_scan,
@@ -253,6 +264,11 @@ function Content() {
   const matches = state?.scan.results ?? [];
   const matchType = (match: Match) => resultTypes[match.address] ?? match.kind;
   const matchAddress = (match: Match): Address => ({ address: match.address, kind: matchType(match) });
+  const quickEdit = (rows: Match[], anchor: string | null) => {
+    if (!state?.session || !rows.length) return;
+    setQuickReport(null); setValue((rows[0].values ? rows[0].values[matchType(rows[0])] : rows[0].value) ?? '0');
+    setForm({ mode: 'quick', addresses: rows.map(matchAddress), sessionId: state.session.id, scanId: state.scan.id, anchor });
+  };
   const connectProcess = (candidate: Process) => void run(async () => {
     await api.attach(candidate.pid, candidate.id);
     processChoice = candidate; setSelectedProcessId(candidate.id);
@@ -263,7 +279,23 @@ function Content() {
   const groupMembers = form?.mode === 'group-write' ? entries.filter(entry => entry.group_id === form.group.id) : [];
   const groupReport = form?.mode === 'group-write' && state?.group_write?.group_id === form.group.id && state.group_write.value === value ? state.group_write : null;
   const showForm = form && <div className="mds-form">
-    {form.mode === 'edit' ? <>
+    {form.mode === 'quick' ? <>
+      <div className="mds-name">Quick edit · {form.addresses.length} address{form.addresses.length === 1 ? '' : 'es'}</div>
+      <div className="mds-muted">Apply one value directly to these search results. Nothing is added to your saved groups.</div>
+      {form.addresses.map(row => <div className="mds-muted mds-code" key={row.address}>{row.address} · {row.kind}</div>)}
+      <ControllerPad label="Quick value" value={value} disabled={locked || !live} onChange={setValue} initialOpen />
+      <Focusable className="mds-actions">
+        <DialogButton disabled={locked || !live || !value.trim()} onClick={() => void run(async () => {
+          const next = await api.writeResults(form.addresses, value, form.sessionId, form.scanId);
+          setQuickReport(next.quick_write ?? null); return next;
+        })}>{form.addresses.length === 1 ? 'Apply quick edit' : 'Apply to selected results'}</DialogButton>
+        <DialogButton disabled={locked} onClick={() => setForm(null)}>Close quick edit</DialogButton>
+      </Focusable>
+      {quickReport && <div role={quickReport.failed.length ? 'alert' : 'status'} className="mds-muted">
+        Updated {quickReport.written.length} of {quickReport.total} search addresses. Nothing was saved.
+        {quickReport.failed.map(failure => <div key={failure.id}>{failure.address}: {failure.error}</div>)}
+      </div>}
+    </> : form.mode === 'edit' ? <>
       <ControllerPad label="Address label" mode="text" value={name} disabled={locked} onChange={setName} />
       <ControllerPad label="New value" value={value} disabled={locked || !live} onChange={setValue} />
       <Focusable className="mds-actions">
@@ -401,6 +433,8 @@ function Content() {
         {state?.scan.has_scan && <Row><ButtonItem layout="below" disabled={locked} description="Your named entries stay saved." onClick={() => void run(async () => { const next = await api.reset(); setOperator('equal'); setSelectedMatches([]); setResultTypes({}); next.scan.operator = 'equal'; return next; }, 'Search reset. Saved entries kept.')}>Start a new search</ButtonItem></Row>}
         <Row><div className="mds-muted">{state?.scan.has_scan ? `${state.scan.count.toLocaleString()} matches · showing up to the first 200` : 'Change the value in-game between searches to narrow the results.'}</div></Row>
         {matches.length > 0 && <Row>
+          <ButtonItem layout="below" disabled={locked || !live || !selectedMatches.length} onClick={() => quickEdit(matches.filter(row => selectedMatches.includes(row.address)), null)}>Quick edit selected ({selectedMatches.length})</ButtonItem>
+          {form?.mode === 'quick' && form.anchor === null && showForm}
           <Focusable className="mds-actions">
             <DialogButton disabled={locked || !selectedMatches.length} onClick={() => save(matches.filter(row => selectedMatches.includes(row.address)).map(matchAddress))}>Save selected ({selectedMatches.length})</DialogButton>
             <DialogButton disabled={locked || !selectedMatches.length} onClick={() => setSelectedMatches([])}>Clear selection</DialogButton>
@@ -410,13 +444,15 @@ function Content() {
           <div className="mds-value">{(match.values ? match.values[matchType(match)] : match.value) ?? 'Unavailable'}</div>
           <div className="mds-muted mds-code">{match.address} · {matchType(match)}</div>
           {state?.scan.kind === 'auto' && (match.candidate_kinds?.length ?? 0) > 1 && <>
-            <div className="mds-muted">Several types match. Choose the type to save; the default is a suggestion.</div>
-            <DropdownItem label={`Saved type for ${match.address}`} selectedOption={matchType(match)} disabled={locked}
+            <div className="mds-muted">Several types match. Choose the type to edit or save; the default is a suggestion.</div>
+            <DropdownItem label={`Result type for ${match.address}`} selectedOption={matchType(match)} disabled={locked}
               rgOptions={match.candidate_kinds!.map(data => ({ data, label: data }))}
               onChange={option => setResultTypes(previous => ({ ...previous, [match.address]: option.data }))} />
           </>}
           <ToggleField label={`Select ${match.address}`} checked={selectedMatches.includes(match.address)} disabled={locked}
             onChange={checked => setSelectedMatches(previous => checked ? [...previous, match.address] : previous.filter(address => address !== match.address))} />
+          <ButtonItem layout="below" disabled={locked || !live} onClick={() => quickEdit([match], match.address)}>Quick edit</ButtonItem>
+          {form?.mode === 'quick' && form.anchor === match.address && showForm}
           <ButtonItem layout="below" disabled={locked} onClick={() => save([matchAddress(match)])}>Save to group</ButtonItem>
         </div></Row>)}
         {matches.length > 10 && <Row><Focusable className="mds-actions">

@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -148,6 +149,9 @@ class Plugin:
     async def write_group(self, group_id, value):
         return await self._call(self.store.write_group, group_id, value)
 
+    async def write_results(self, addresses, value, session_id, scan_id):
+        return await self._call(self.store.write_results, addresses, value, session_id, scan_id)
+
     async def freeze_entry(self, entry_id, enabled):
         return await self._call(self.store.freeze_entry, entry_id, enabled)
 
@@ -213,7 +217,8 @@ class Plugin:
                     rows[index]['values'][candidate] = reading['value']
                     if candidate == rows[index]['kind']:
                         rows[index].update(value=reading['value'], error=reading['error'])
-                scan.update(has_scan=True, kind=kind, operator=operator, input=value,
+                self.store.quick_write = None
+                scan.update(id=uuid.uuid4().hex, has_scan=True, kind=kind, operator=operator, input=value,
                             count=result['count'], results=rows, progress=1.0)
         except Exception:
             if self.worker.process is None or self.worker.process.returncode is not None:

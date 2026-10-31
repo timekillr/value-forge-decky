@@ -48,10 +48,11 @@ let listedProcesses = [
 let deferProcessList = null;
 let deferStateRead = null;
 let actualValue = '10';
+let scanRevision = 0, quickFailureAddress = null;
 const entry = { id: 'gold', group_id: 'group-gold', name: 'Gold', address: '0x1234', kind: 'int32', value: '10',
   previous: null, changed: false, status: 'ok', error: null, frozen: false, updated_at: 1792353600 };
 const state = { session: { id: 'a', pid: 42, name: 'OfflineGame.exe', entries: [entry], groups: [{ id: 'group-gold', name: 'Gold' }] }, alive: true,
-  storage_warning: null, scan: { kind: 'int32', has_scan: true, busy: false, count: 17, operator: 'equal',
+  storage_warning: null, scan: { id: 'scan-a', kind: 'int32', has_scan: true, busy: false, count: 17, operator: 'equal',
   input: '10', results: [{ address: '0x5678', kind: 'int32', value: '10', error: null }, { address: '0x9876', kind: 'int32', value: '10', error: null }] } };
 const button = ({ children, onClick, disabled, className }) => h('button', { onClick, disabled, className,
   onKeyDown: e => { if (e.key === 'GamepadA' && !disabled) { e.stopPropagation(); onClick?.(e); } } }, children);
@@ -95,6 +96,7 @@ window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIIn
       await scanWait;
       state.scan.busy = false; state.scan.progress = 1;
       state.scan.has_scan = true;
+      state.scan.id = 'scan-' + (++scanRevision);
       [state.scan.operator, state.scan.input, state.scan.kind] = args;
     }
     if (route === 'get_state' && deferStateRead) await deferStateRead;
@@ -126,6 +128,17 @@ window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIIn
     if (route === 'write_entry') {
       state.session.entries.find(e => e.id === args[0]).value = args[1];
       if (args[0] === 'gold') actualValue = args[1];
+    }
+    if (route === 'write_results') {
+      const [addresses, value, sessionId, scanId] = args;
+      assert.equal(sessionId, state.session.id); assert.equal(scanId, state.scan.id);
+      const written = [], failed = [];
+      for (const target of addresses) {
+        if (target.address === quickFailureAddress) { failed.push({id:target.address,address:target.address,error:'Test write failed'}); continue; }
+        const row = state.scan.results.find(r => r.address === target.address);
+        row.value = value; if (row.values) row.values[target.kind] = value; written.push(target.address);
+      }
+      state.quick_write = {value,total:addresses.length,written,failed,updated_at:Date.now()/1000};
     }
     if (route === 'remove_entry') state.session.entries = state.session.entries.filter(e => e.id !== args[0]);
     if (route === 'move_entry') state.session.entries.find(e => e.id === args[0]).group_id = args[1];
@@ -162,7 +175,7 @@ function fillPad(label, text) {
   activate(scope.getByRole('button', { name: 'Clear', exact: true }));
   const hex = label === 'Address (hex)';
   let content = hex ? text.replace(/^0x/i, '') : text;
-  if ((label === 'Search value' || label === 'New value') && content.startsWith('-')) {
+  if (['Search value', 'New value', 'Quick value', 'Group value', 'Change amount'].includes(label) && content.startsWith('-')) {
     activate(scope.getByRole('button', { name: '±', exact: true })); content = content.slice(1);
   }
   for (const character of content) {
@@ -199,6 +212,31 @@ console.log('PASS: unmount/remount preserves named entries and requests new memo
 fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 assert.match(document.body.textContent, /17 matches/);
 assert.equal(screen.getByLabelText('Value type').value, 'int32');
+const resultCard = screen.getAllByRole('button', {name:'Quick edit',exact:true})[0].closest('.mds-card');
+assert.ok(within(resultCard).getByRole('button',{name:'Quick edit',exact:true}).compareDocumentPosition(within(resultCard).getByRole('button',{name:'Save to group',exact:true})) & window.Node.DOCUMENT_POSITION_FOLLOWING);
+activate(within(resultCard).getByRole('button',{name:'Quick edit',exact:true}));
+fillPad('Quick value', '-123');
+activate(screen.getByRole('button',{name:'Apply quick edit',exact:true}));
+await waitFor(() => assert.match(document.body.textContent,/Updated 1 of 1 search addresses/));
+assert.equal(state.scan.results[0].value,'-123');
+assert.equal(calls.filter(c=>c[0]==='save_entries').length,0);
+assert.equal(state.session.entries.length,1);
+activate(screen.getByRole('button',{name:'Close quick edit',exact:true}));
+console.log('PASS: a controller-only Quick edit sits above Save to group and writes without creating saved entries.');
+fireEvent.click(screen.getByLabelText('Select 0x5678')); fireEvent.click(screen.getByLabelText('Select 0x9876'));
+activate(screen.getByRole('button',{name:'Quick edit selected (2)',exact:true}));
+fillPad('Quick value','777'); quickFailureAddress='0x9876';
+activate(screen.getByRole('button',{name:'Apply to selected results',exact:true}));
+await waitFor(()=>assert.match(document.body.textContent,/Updated 1 of 2 search addresses/));
+assert.match(document.body.textContent,/0x9876: Test write failed/);
+quickFailureAddress=null;
+activate(screen.getByRole('button',{name:'Apply to selected results',exact:true}));
+await waitFor(()=>assert.match(document.body.textContent,/Updated 2 of 2 search addresses/));
+assert.ok(state.scan.results.every(r=>r.value==='777'));
+assert.equal(state.session.entries.length,1);assert.equal(state.session.groups.length,1);
+activate(screen.getByRole('button',{name:'Close quick edit',exact:true}));
+activate(screen.getByRole('button',{name:'Clear selection',exact:true}));
+console.log('PASS: selected results can be edited together, with explicit partial-failure feedback and no saved group.');
 fireEvent.click(screen.getByLabelText('Select 0x5678'));
 fireEvent.click(screen.getByLabelText('Select 0x9876'));
 fireEvent.click(screen.getByRole('button', { name: 'Save selected (2)' }));
@@ -346,7 +384,19 @@ state.scan.results = [{ address: '0x9999', kind: 'int32', value: '100', error: n
   candidate_kinds: ['int32', 'uint32', 'int64'], values: { int32: '100', uint32: '100', int64: '100' } }];
 await act(async () => { visibilitySetter(false); });
 await act(async () => { visibilitySetter(true); });
-fireEvent.change(screen.getByLabelText('Saved type for 0x9999'), { target: { value: 'int64' } });
+fireEvent.change(screen.getByLabelText('Result type for 0x9999'), { target: { value: 'int64' } });
+activate(screen.getByRole('button',{name:'Quick edit',exact:true}));
+fillPad('Quick value','4294967297');
+activate(screen.getByRole('button',{name:'Apply quick edit',exact:true}));
+await waitFor(()=>assert.equal(state.scan.results[0].values.int64,'4294967297'));
+assert.equal(calls.filter(c=>c[0]==='write_results').at(-1)[1][0].kind,'int64');
+activate(screen.getByRole('button',{name:'Close quick edit',exact:true}));
+activate(screen.getByRole('button',{name:'Quick edit',exact:true}));
+state.scan.id='search-changed-on-phone';
+await act(async()=>{visibilitySetter(false);});await act(async()=>{visibilitySetter(true);});
+assert.equal(screen.queryByRole('button',{name:'Apply quick edit',exact:true}),null);
+fireEvent.change(screen.getByLabelText('Result type for 0x9999'), { target: { value: 'int64' } });
+console.log('PASS: Auto quick edits use the chosen concrete width, and another client changing the search closes the old editor.');
 activate(screen.getByRole('button', { name: 'Save to group', exact: true }));
 fillPad('Group name', 'Auto result');
 activate(screen.getByRole('button', { name: 'Save addresses', exact: true }));
@@ -456,5 +506,5 @@ console.log('PASS: a paired phone is revoked only after confirming its own remov
 screen.unmount();
 assert.equal(uiErrors.length, 0, String(uiErrors));
 console.log('PASS: browser Gamepad API scrolling works when native Steam controller callbacks are unavailable.');
-console.log('23 UI scenarios passed (simulated Steam/gamepad input; hardware validation remains on-device).');
+console.log('26 UI scenarios passed (simulated Steam/gamepad input; hardware validation remains on-device).');
 dom.window.close();

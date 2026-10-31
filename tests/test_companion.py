@@ -117,6 +117,31 @@ class Companion(fixtures.Backend):
             self.assertEqual(status, 200)
             self.assertEqual(persist.call_count, 0)
 
+    async def test_remote_quick_edits_share_results_without_saving_and_deduplicate(self):
+        status, data = await self.command('scan', {'operator': 'equal', 'value': '1379467285', 'kind': 'auto'})
+        self.assertEqual(status, 200, data)
+        state = data['data']
+        args = {'addresses': [{'address': self.addresses[key], 'kind': 'int32'} for key in ('int32', 'int32_copy')],
+                'value': '123', 'session_id': state['session']['id'], 'scan_id': state['scan']['id']}
+        request_id = uuid.uuid4().hex
+        with patch.object(self.plugin, 'write_results', wraps=self.plugin.write_results) as write:
+            for _ in range(2):
+                status, data = await self.command('write_results', args, request_id=request_id)
+                self.assertEqual(status, 200, data)
+            self.assertEqual(write.call_count, 1)
+        self.assertEqual(data['data']['quick_write']['total'], 2)
+        self.assertEqual(self.target_value('int32'), '123')
+        self.assertEqual(self.target_value('int32_copy'), '123')
+        status, data = await self.request('GET', '/v1/state?refresh=1', token=self.token)
+        self.assertEqual(status, 200)
+        self.assertFalse(data['data']['session']['groups'])
+        self.assertFalse(data['data']['session']['entries'])
+        row = next(r for r in data['data']['scan']['results'] if r['address'] == self.addresses['int32'])
+        self.assertEqual(row['values']['int32'], '123')
+        status, _ = await self.command('write_results', dict(args, scan_id='old-scan', value='999'))
+        self.assertEqual(status, 400)
+        self.assertEqual(self.target_value('int32'), '123')
+
     async def test_remote_scan_progress_can_be_polled_while_command_is_pending(self):
         await self.plugin.scan('equal', '1379467285', 'auto')
         ready, finish = asyncio.Event(), asyncio.Event()

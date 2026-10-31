@@ -80,11 +80,24 @@ the selected process's full identity through `expected_id`.
 | remove_entry | entry_id |
 | write_entry | entry_id, value |
 | write_group | group_id, value |
+| write_results (0.7.0+) | addresses [{address, kind}], value, session_id, scan_id |
 | freeze_entry | entry_id, enabled |
 
 All values and addresses are strings, including 64-bit integers. Existing type,
 range, process-liveness, overlap and writable-address checks remain authoritative.
 Auto searches and every comparison mode are unchanged from the Decky UI.
+
+Version 0.7.0 adds `scan.id`, a fresh identity for every completed search and
+reset. `write_results` requires the identity of the displayed scan and session,
+accepts only addresses/types in its current first 200 results, and rejects writes
+while scanning. The entire batch is preflighted before writing. It creates no
+saved group/entry and never updates scanmem's comparison baseline. The state
+includes an ephemeral `quick_write` report with `total`, `written` address IDs,
+`failed` address/error objects, value, selected addresses, session/scan IDs and
+timestamp. State refresh rereads concrete result values as well as saved values.
+Existing overlapping freeze targets update from actual memory after success;
+failed overlapping targets stop freezing. Protocol 1 remains compatible with
+older apps; the new client requires plugin 0.7.0 for Quick edit.
 
 Remote mutations are serialized. Scans run outside the session lock so state
 and progress remain readable and explicit freeze targets continue updating.

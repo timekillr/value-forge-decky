@@ -124,6 +124,107 @@ class Backend(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.target_value('int32'), '555')
         self.assertEqual(self.target_value('int32_copy'), '1379467285')
 
+    async def quick_results(self, addresses, value, session_id=None, scan_id=None):
+        return await self.plugin.write_results(addresses, value,
+            session_id or self.plugin.store.session['id'], scan_id or self.plugin.store.scan['id'])
+
+    async def test_quick_edit_batch_creates_no_saved_entries_and_keeps_native_baseline(self):
+        state = await self.plugin.scan('equal', '1379467285', 'int32')
+        scan_id, count = state['scan']['id'], state['scan']['count']
+        addresses = [{'address': self.addresses[kind], 'kind': 'int32'} for kind in ('int32', 'int32_copy')]
+        state = await self.quick_results(addresses, '1379467290')
+        self.assertEqual((state['quick_write']['total'], len(state['quick_write']['written']), state['quick_write']['failed']), (2, 2, []))
+        self.assertEqual((state['scan']['id'], state['scan']['count']), (scan_id, count))
+        self.assertFalse(state['session']['entries'])
+        self.assertFalse(state['session']['groups'])
+        for address in addresses:
+            row = next(r for r in state['scan']['results'] if r['address'] == address['address'])
+            self.assertEqual(row['value'], '1379467290')
+        # Display refresh and writes never advance scanmem's comparison point.
+        await self.plugin.get_state(True)
+        state = await self.plugin.scan('increased_by', '5', 'int32')
+        self.assertTrue({e['address'] for e in addresses} <= {r['address'] for r in state['scan']['results']})
+        self.assertIsNone(state['quick_write'])
+        self.assertNotEqual(scan_id, state['scan']['id'])
+
+    async def test_quick_edit_uses_chosen_auto_width_and_preserves_uint64_precision(self):
+        await self.plugin.scan('equal', '1379467285', 'auto')
+        address = self.addresses['int32_copy']
+        state = await self.quick_results([{'address': address, 'kind': 'int64'}], '4294967297')
+        row = next(r for r in state['scan']['results'] if r['address'] == address)
+        self.assertEqual(row['values']['int64'], '4294967297')
+        self.assertEqual(self.target_value('int32_copy'), '1')
+        await self.plugin.reset_scan()
+        await self.plugin.scan('equal', '18446744073709551601', 'auto')
+        await self.quick_results([{'address': self.addresses['uint64'], 'kind': 'uint64'}], '18446744073709551615')
+        self.assertEqual(self.target_value('uint64'), '18446744073709551615')
+        self.assertFalse(self.plugin.store.session['entries'])
+
+    async def test_quick_edit_rejects_stale_session_search_busy_and_non_result_addresses(self):
+        await self.plugin.scan('equal', '1379467285', 'int32')
+        addresses = [{'address': self.addresses['int32'], 'kind': 'int32'}]
+        for kwargs, text in [({'session_id': 'old-session'}, 'session changed'), ({'scan_id': 'old-scan'}, 'results changed')]:
+            with self.assertRaisesRegex(ValueError, text):
+                await self.quick_results(addresses, '12', **kwargs)
+        for rows in ([], addresses * 2, [{'address': self.addresses['float32'], 'kind': 'float32'}],
+                     [{'address': self.addresses['int32'], 'kind': 'float32'}]):
+            with self.assertRaises(ValueError):
+                await self.quick_results(rows, '12')
+        self.plugin.store.scan['busy'] = True
+        try:
+            with self.assertRaisesRegex(ValueError, 'current search'):
+                await self.quick_results(addresses, '12')
+        finally:
+            self.plugin.store.scan['busy'] = False
+        old_id = self.plugin.store.scan['id']
+        await self.plugin.scan('equal', '1379467285', 'int32')
+        with self.assertRaisesRegex(ValueError, 'results changed'):
+            await self.quick_results(addresses, '12', scan_id=old_id)
+        await self.plugin.reset_scan()
+        with self.assertRaisesRegex(ValueError, 'results changed'):
+            await self.quick_results(addresses, '12')
+        self.assertEqual(self.target_value('int32'), '1379467285')
+
+    async def test_quick_edit_batch_preflight_prevents_range_overlap_and_unwritable_changes(self):
+        await self.plugin.scan('equal', '1379467285', 'int32')
+        address = self.addresses['int32']
+        self.plugin.store.scan['results'].extend([
+            {'address': self.addresses['float32'], 'kind': 'uint8'},
+            {'address': hex(int(address, 16) + 1), 'kind': 'int16'},
+            {'address': '0x123', 'kind': 'int32'}])
+        first = {'address': address, 'kind': 'int32'}
+        for other, value in [({'address': self.addresses['float32'], 'kind': 'uint8'}, '300'),
+                             ({'address': hex(int(address, 16) + 1), 'kind': 'int16'}, '5'),
+                             ({'address': '0x123', 'kind': 'int32'}, '5')]:
+            with self.assertRaisesRegex(ValueError, 'No addresses were changed'):
+                await self.quick_results([first, other], value)
+            self.assertEqual(self.target_value('int32'), '1379467285')
+
+    async def test_quick_edit_partial_failure_reports_and_updates_existing_freeze_targets(self):
+        first_id = await self.save()
+        state = await self.plugin.save_entries('Copy', [{'address': self.addresses['int32_copy'], 'kind': 'int32'}])
+        second_id = state['session']['entries'][-1]['id']
+        await self.plugin.freeze_entry(first_id, True)
+        await self.plugin.freeze_entry(second_id, True)
+        await self.plugin.scan('equal', '1379467285', 'int32')
+        real_write = os.pwrite
+        def write(fd, data, address):
+            if address == int(self.addresses['int32_copy'], 16):
+                raise OSError('Address disappeared after preflight')
+            return real_write(fd, data, address)
+        rows = [{'address': self.addresses[key], 'kind': 'int32'} for key in ('int32', 'int32_copy')]
+        with patch('session_core.os.pwrite', side_effect=write):
+            state = await self.quick_results(rows, '456')
+        self.assertEqual(state['quick_write']['written'], [self.addresses['int32']])
+        self.assertEqual(state['quick_write']['failed'][0]['address'], self.addresses['int32_copy'])
+        self.assertEqual(self.plugin.store.entry(first_id)['value'], '456')
+        self.assertEqual(self.plugin.store.entry(first_id)['freeze_value'], '456')
+        self.assertFalse(self.plugin.store.entry(second_id)['frozen'])
+        self.assertEqual(len(state['session']['entries']), 2)
+        self.target_value('int32', 1)
+        self.plugin.store.tick_freezes()
+        self.assertEqual(self.target_value('int32'), '456')
+
     async def test_auto_decimal_scan_keeps_float_family_on_whole_number_refinement(self):
         state = await self.plugin.scan('equal', '-73.125', 'auto')
         row = next(r for r in state['scan']['results'] if r['address'] == self.addresses['float32'])

@@ -168,7 +168,7 @@ class ProcessMemory:
                 raise ValueError(f"{entry['name']} ({entry['kind']}): {error} No addresses were changed.") from error
             for offset, byte in enumerate(data):
                 if address + offset in desired and desired[address + offset] != byte:
-                    raise ValueError('Group addresses overlap with conflicting types. No addresses were changed.')
+                    raise ValueError('Selected addresses overlap with conflicting types. No addresses were changed.')
                 desired[address + offset] = byte
             prepared.append((entry, address, data))
         fd = self._open(session, write=True)
@@ -207,8 +207,9 @@ class SessionStore:
         self.active = None
         self.storage_warning = None
         self.group_write = None
+        self.quick_write = None
         self.migrated_v1 = False
-        self.scan = {'kind': 'auto', 'has_scan': False, 'count': 0, 'results': [],
+        self.scan = {'id': uuid.uuid4().hex, 'kind': 'auto', 'has_scan': False, 'count': 0, 'results': [],
                      'operator': 'equal', 'input': '', 'busy': False, 'progress': 0.0}
         try:
             stored = json.loads(self.path.read_text())
@@ -284,7 +285,8 @@ class SessionStore:
         return changed
 
     def reset_scan(self):
-        self.scan.update(has_scan=False, count=0, results=[], operator='equal', input='', progress=0.0)
+        self.quick_write = None
+        self.scan.update(id=uuid.uuid4().hex, has_scan=False, count=0, results=[], operator='equal', input='', progress=0.0)
 
     def require_live(self):
         if self.session is None or not self.memory.alive(self.session):
@@ -308,8 +310,22 @@ class SessionStore:
                 entry['last_value'] = reading['value']
             if reading['error']:
                 entry['frozen'] = False
+        self.refresh_results()
         if persist:
             self.persist()
+
+    def refresh_results(self):
+        """Refresh display values only; scanmem retains its comparison baseline."""
+        if not self.session or self.scan['busy']:
+            return
+        requests = [(row, kind, {'address': row['address'], 'kind': kind})
+                    for row in self.scan['results']
+                    for kind in row.get('candidate_kinds', [row['kind']])]
+        readings = self.memory.read_entries(self.session, [request[2] for request in requests])
+        for (row, kind, _), reading in zip(requests, readings):
+            row.setdefault('values', {})[kind] = reading['value']
+            if kind == row['kind']:
+                row.update(value=reading['value'], error=reading['error'])
 
     def state(self):
         session = self.session
@@ -318,7 +334,8 @@ class SessionStore:
             for entry in session['entries']:
                 entry.update(frozen=False, status='exited', value=None, changed=False)
         return {'session': session, 'alive': alive, 'scan': self.scan,
-                'storage_warning': self.storage_warning, 'group_write': self.group_write}
+                'storage_warning': self.storage_warning, 'group_write': self.group_write,
+                'quick_write': self.quick_write}
 
     def group(self, group_id):
         for group in self.session['groups'] if self.session else []:
@@ -442,6 +459,54 @@ class SessionStore:
                             'total': len(entries), 'written': written, 'failed': failed,
                             'updated_at': time.time()}
         self.refresh()
+
+    def write_results(self, addresses, value, session_id, scan_id):
+        self.require_live()
+        if self.session['id'] != session_id:
+            raise ValueError('The game session changed. Reopen Quick edit before applying a value.')
+        if self.scan['busy']:
+            raise ValueError('Wait for the current search before editing results.')
+        if not self.scan['has_scan'] or self.scan['id'] != scan_id:
+            raise ValueError('Search results changed. Reopen Quick edit before applying a value.')
+        if not isinstance(addresses, list) or not 1 <= len(addresses) <= 200:
+            raise ValueError('Select between 1 and 200 search results to edit.')
+        matches = {hex(parse_address(row['address'])): row for row in self.scan['results']}
+        targets, seen = [], set()
+        for candidate in addresses:
+            if not isinstance(candidate, dict):
+                raise ValueError('Choose a valid search result and concrete type.')
+            address = hex(parse_address(candidate.get('address')))
+            kind = candidate.get('kind')
+            row = matches.get(address)
+            if not isinstance(kind, str) or kind not in FORMATS or row is None or kind not in row.get('candidate_kinds', [row['kind']]):
+                raise ValueError('That address or type is no longer in these search results.')
+            if address in seen:
+                raise ValueError('Select each search address only once.')
+            seen.add(address)
+            targets.append({'id': address, 'name': address, 'address': address, 'kind': kind})
+        # Use the same whole-batch range/overlap/writability preflight as groups.
+        written, failed = self.memory.write_entries(self.session, targets, value)
+        self.quick_write = {'session_id': session_id, 'scan_id': scan_id, 'value': str(value),
+                            'addresses': [{'address': e['address'], 'kind': e['kind']} for e in targets],
+                            'total': len(targets), 'written': written, 'failed': failed, 'updated_at': time.time()}
+        self.refresh(persist=False)
+        # A matching saved freeze must not immediately undo an explicit edit.
+        # Read its actual bytes back, including any overlap with another width.
+        successful = set(written)
+        failed_ids = {e['id'] for e in failed}
+        for entry in self.session['entries']:
+            if not entry['frozen']:
+                continue
+            start = parse_address(entry['address'])
+            end = start + struct.calcsize(FORMATS[entry['kind']])
+            overlaps = {target['id'] for target in targets
+                        if start < parse_address(target['address']) + struct.calcsize(FORMATS[target['kind']])
+                        and parse_address(target['address']) < end}
+            if overlaps & failed_ids or entry['value'] is None:
+                entry['frozen'] = False
+            elif overlaps & successful:
+                entry['freeze_value'] = entry['value']
+        self.persist()
 
     def freeze_entry(self, entry_id, enabled):
         entry = self.entry(entry_id)

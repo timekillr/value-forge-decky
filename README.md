@@ -1,4 +1,4 @@
-# Value Forge — 0.6.0
+# Value Forge — 0.7.0
 
 A Decky plugin for named groups of memory addresses in a single running game session.
 Built on [Memory Deck](https://github.com/CameronRedmore/memory-deck) by
@@ -11,6 +11,26 @@ Value Forge name. The internal package/folder ID stays `memory-deck-session`
 for upgrade compatibility, so existing saved groups use the same settings.
 After updating from Memory Deck Session, restart Decky Loader once (or reboot)
 to clear the old display name and backend. No uninstall or settings reset is needed.
+
+## Changes in 0.7.0
+
+Search results now have **Quick edit** directly above **Save to group**. Enter a
+value with the controller number pad and press **Apply quick edit**. To change
+several results together, select their addresses and choose **Quick edit selected**.
+This applies one value using each row's chosen concrete type, without creating a
+saved address or group. Auto's **Result type** selector applies to editing and saving.
+
+Both Decky and [Value Forge Companion 0.2.0](https://github.com/timekillr/value-forge-companion)
+support the same workflow. Current search readings and matching saved addresses
+refresh after an edit. If a saved address is already frozen, its target updates
+to the read-back value. Failed affected addresses stop freezing. The report shows
+successes and per-address failures. Range, overlap and writable-region checks
+run before any batch write; writes are sequential while the game runs.
+
+Quick edits keep the current search candidates and its last-search comparison
+baseline. Refining, resetting or changing the game invalidates an open quick
+editor, so a stale selection cannot write to a different search or session.
+These temporary selections and reports are not stored as saved entries.
 
 ## Changes in 0.6.0
 
