@@ -4,6 +4,7 @@ import { ButtonItem, DialogButton, DropdownItem, Focusable, PanelSection, PanelS
 import { callable, definePlugin, useQuickAccessVisible } from '@decky/api';
 import { ControllerPad } from './components/ControllerPad';
 import { useRightStickScroll } from './hooks/useRightStickScroll';
+import { CompanionPanel } from './components/CompanionPanel';
 
 interface Entry {
   id: string; group_id: string; name: string; address: string; kind: string; value: string | null;
@@ -156,6 +157,21 @@ function Content() {
       if (mounted.current && version === requestVersion.current) setRefreshing(false);
     }
   }, [apply]);
+  useEffect(() => {
+    if (!visible) return;
+    let active = true, pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending || operationPending.current) return;
+      pending = true;
+      const version = requestVersion.current;
+      try {
+        const next = await api.state(false);
+        if (active && mounted.current && version === requestVersion.current && !operationPending.current) apply(next);
+      } catch { /* The normal refresh/operation path displays connection errors. */ }
+      finally { pending = false; }
+    }, 1500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [visible, apply]);
   useEffect(() => { if (visible) void refresh(); }, [visible, refresh]);
   useEffect(() => {
     if (!visible || !(scanPending || state?.scan.busy)) return;
@@ -427,6 +443,7 @@ function Content() {
       {!loadingProcesses && !processes.length && <Row><div className="mds-empty">No processes listed yet. Start your game, then reload the list.</div></Row>}
       {!loadingProcesses && processes.length > 0 && !filteredProcesses.length && <Row><div className="mds-empty">No processes match this filter. Try another name or clear the filter.</div></Row>}
     </PanelSection>}
+    <CompanionPanel visible={visible} />
   </div>;
 }
 

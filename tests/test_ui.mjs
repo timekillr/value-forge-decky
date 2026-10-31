@@ -16,6 +16,8 @@ const { render, fireEvent, waitFor, act, within } = await import('@testing-libra
 const h = React.createElement;
 const Visibility = React.createContext(true);
 const calls = [];
+const companion = { enabled: false, listening: false, addresses: ['192.168.1.5:52881'], hostname: 'steam.local:52881',
+  fingerprint: '0123456789abcdef0123456789abcdef', pairing_code: '', expires_in: 300, devices: [{ id: 'phone-1', name: 'Test phone' }] };
 const nativeListeners = new Set();
 const controllerListListeners = new Set();
 let nativeUnregistered = 0;
@@ -78,6 +80,12 @@ window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIIn
   useQuickAccessVisible: () => React.useContext(Visibility),
   callable: route => async (...args) => {
     calls.push([route, ...args]);
+    if (route.startsWith('companion_')) {
+      if (route === 'companion_enable') companion.enabled = companion.listening = args[0];
+      if (route === 'companion_pairing') companion.pairing_code = '123456';
+      if (route === 'companion_revoke') companion.devices = companion.devices.filter(d => d.id !== args[0]);
+      return structuredClone(companion);
+    }
     if (route === 'get_processes') {
       if (deferProcessList) await deferProcessList;
       return structuredClone(listedProcesses);
@@ -433,8 +441,20 @@ Object.defineProperty(screen.container, 'scrollHeight', { value: 2000, configura
 Object.defineProperty(screen.container, 'clientHeight', { value: 400, configurable: true });
 await waitFor(() => assert.ok(screen.container.scrollTop > 0));
 webAxis = 0;
+fireEvent.click(screen.getByLabelText('Enable phone companion'));
+await waitFor(() => assert.ok(screen.getByRole('button', { name: 'Pair a phone', exact: true })));
+await act(async () => activate(screen.getByRole('button', { name: 'Pair a phone', exact: true })));
+await waitFor(() => assert.ok(screen.getByText('123456')));
+assert.ok(screen.getByText('0123 4567 89AB CDEF 0123'));
+console.log('PASS: phone pairing is enabled and created using controller controls with a visible code and fingerprint.');
+await act(async () => activate(screen.getByRole('button', { name: 'Remove Test phone', exact: true })));
+assert.equal(calls.filter(c => c[0] === 'companion_revoke').length, 0);
+await act(async () => activate(screen.getByRole('button', { name: 'Confirm remove Test phone', exact: true })));
+await waitFor(() => assert.equal(screen.queryByText('Remove Test phone'), null));
+assert.deepEqual(calls.find(c => c[0] === 'companion_revoke'), ['companion_revoke', 'phone-1']);
+console.log('PASS: a paired phone is revoked only after confirming its own remove control.');
 screen.unmount();
 assert.equal(uiErrors.length, 0, String(uiErrors));
 console.log('PASS: browser Gamepad API scrolling works when native Steam controller callbacks are unavailable.');
-console.log('21 UI scenarios passed (simulated Steam/gamepad input; hardware validation remains on-device).');
+console.log('23 UI scenarios passed (simulated Steam/gamepad input; hardware validation remains on-device).');
 dom.window.close();

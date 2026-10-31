@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 import decky
 from session_core import SessionStore, pack_value, unpack_value, normalize_auto_value
+from companion_server import CompanionServer, expected_session, ApiError
 
 class Worker:
     def __init__(self):
@@ -70,6 +71,26 @@ class Plugin:
         self.worker_identity = None
         self.store = SessionStore(Path(decky.DECKY_PLUGIN_SETTINGS_DIR) / 'sessions.json')
         self.freezer = asyncio.create_task(self._freeze_loop())
+        self.companion = CompanionServer(self, Path(decky.DECKY_PLUGIN_SETTINGS_DIR) / 'companion')
+        if self.companion.config['enabled']:
+            await self.companion.start()
+
+    def _check_remote_session(self):
+        expected = expected_session.get()
+        if expected is not None and (not self.store.session or self.store.session['id'] != expected):
+            raise ApiError(409, 'The game session changed. Refresh before making another change.')
+
+    async def companion_status(self):
+        return self.companion.status()
+
+    async def companion_enable(self, enabled):
+        return await self.companion.enable(enabled)
+
+    async def companion_pairing(self):
+        return self.companion.begin_pairing()
+
+    async def companion_revoke(self, device_id):
+        return self.companion.revoke(device_id)
 
     async def _freeze_loop(self):
         while True:
@@ -82,6 +103,7 @@ class Plugin:
 
     async def _call(self, function, *args):
         async with self.lock:
+            self._check_remote_session()
             if function == self.store.attach and self.store.scan['busy']:
                 raise ValueError('Wait for the current search before switching processes.')
             await asyncio.to_thread(function, *args)
@@ -90,10 +112,10 @@ class Plugin:
     async def get_processes(self):
         return await asyncio.to_thread(self.store.memory.processes)
 
-    async def get_state(self, refresh=True):
+    async def get_state(self, refresh=True, persist=True):
         async with self.lock:
             if refresh:
-                await asyncio.to_thread(self.store.refresh)
+                await asyncio.to_thread(self.store.refresh, persist)
             return self.store.state()
 
     async def attach(self, pid, expected_id):
@@ -131,6 +153,7 @@ class Plugin:
 
     async def reset_scan(self):
         async with self.lock:
+            self._check_remote_session()
             if self.store.scan['busy']:
                 raise ValueError('Wait for the current search before resetting it.')
             if self.worker_identity:
@@ -140,6 +163,7 @@ class Plugin:
 
     async def scan(self, operator, value, kind):
         async with self.lock:
+            self._check_remote_session()
             if self.store.scan['busy']:
                 raise ValueError('A search is already running.')
             self.store.require_live()
@@ -203,6 +227,8 @@ class Plugin:
         return self.store.state()
 
     async def _unload(self):
+        if hasattr(self, 'companion'):
+            await self.companion.close(cancel_commands=True)
         if hasattr(self, 'freezer'):
             self.freezer.cancel()
             with contextlib.suppress(asyncio.CancelledError):

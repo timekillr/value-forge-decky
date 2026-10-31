@@ -290,7 +290,7 @@ class SessionStore:
         if self.session is None or not self.memory.alive(self.session):
             raise ProcessLookupError('Select a running game process first.')
 
-    def refresh(self):
+    def refresh(self, persist=True):
         session = self.session
         if not session:
             return
@@ -308,7 +308,8 @@ class SessionStore:
                 entry['last_value'] = reading['value']
             if reading['error']:
                 entry['frozen'] = False
-        self.persist()
+        if persist:
+            self.persist()
 
     def state(self):
         session = self.session

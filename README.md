@@ -1,4 +1,4 @@
-# Value Forge — 0.5.0
+# Value Forge — 0.6.0
 
 A Decky plugin for named groups of memory addresses in a single running game session.
 Built on [Memory Deck](https://github.com/CameronRedmore/memory-deck) by
@@ -11,6 +11,37 @@ Value Forge name. The internal package/folder ID stays `memory-deck-session`
 for upgrade compatibility, so existing saved groups use the same settings.
 After updating from Memory Deck Session, restart Decky Loader once (or reboot)
 to clear the old display name and backend. No uninstall or settings reset is needed.
+
+## Changes in 0.6.0
+
+Value Forge Companion for Android can control this same session from your home
+network while the Decky panel is closed. Searches, progress, groups, individual
+and group writes, freezing, labels, moves, and removal use the same backend.
+
+1. Update the plugin using https://is.gd/valueforge and restart Decky if needed.
+2. In the plugin, enable **Phone companion**, then press **Pair a phone**.
+3. Install **Value Forge Companion** from its GitHub release. Allow Android's
+   local-network permission when requested.
+4. Enter the address and six-digit code shown in Decky. Check that the phone's
+   fingerprint matches the plugin, then confirm pairing.
+5. Use the app. Pairing is remembered across plugin, machine, and app restarts.
+   The phone shows connection status, last response time, and reconnects while
+   open. A changed machine IP can be entered without discarding its pairing.
+
+The plugin listens on HTTPS port 52881 only when the companion is enabled.
+Pairing codes expire after five minutes, are single-use, and allow five incorrect
+attempts. The phone pins the certificate and encrypts its token with Android
+Keystore. Tokens are hashed in the plugin settings. Remove a phone in Decky to
+revoke access. OpenSSL on the Steam Machine creates the local certificate.
+The connection is for your home network; no router configuration is required.
+
+Phone polling reads current values without repeatedly writing the settings file.
+Open Decky panels also observe session changes made from the app. Neither app
+reconnection nor pairing starts scans, changes a value, or enables freezing.
+Do not delete the plugin's companion settings/certificate directory if you want
+to preserve pairings. Back it up with your existing plugin settings.
+
+See [companion protocol](COMPANION_PROTOCOL.md) for the API and lifecycle details.
 
 ## Changes in 0.5.0
 
@@ -153,7 +184,7 @@ Requires SteamOS/Linux x86-64, Decky Loader with its current plugin API,
 and system Python 3.9 or newer. The ZIP already contains the compiled frontend
 and native scanner; you do not need Node, npm, GCC, or Docker to install it.
 
-1. Download **ValueForge-0.5.0.zip** onto the Steam Machine. If you are
+1. Download **ValueForge-0.6.0.zip** onto the Steam Machine. If you are
    reading this on your phone, transfer the ZIP to the machine's Downloads folder.
 2. Open Decky in Gaming Mode and open its settings (gear icon).
 3. Under **General**, enable **Developer Mode**.
@@ -299,7 +330,7 @@ npm run check
 npm run package
 ```
 
-The resulting archive is written to `artifacts/ValueForge-0.5.0.zip`.
+The resulting archive is written to `artifacts/ValueForge-0.6.0.zip`.
 The ZIP includes the complete plugin source, native source, tests, lockfile,
 license notices, and compiled outputs. The native build script builds the
 vendored scanmem sources without requiring autotools. Optional Docker build:
@@ -311,7 +342,7 @@ docker run --rm -v "$PWD:/project" memory-deck-session-builder
 
 Runtime files: `main.py`, `session_core.py`, `scanner_worker.py`,
 `dist/index.js`, `bin/libscanmem.so.1.0.0`, `plugin.json`, and `package.json`.
-No network service is started by the plugin. The isolated native worker uses a
+The optional companion HTTPS service is off until explicitly enabled. The isolated native worker uses a
 private stdin/stdout protocol and exits with the backend.
 
 ## License and attribution
