@@ -1,0 +1,97 @@
+name: Build and publish Decky release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Stable version tag, for example v0.5.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: true
+      - name: Import initial source bundle
+        if: ${{ hashFiles('source-bootstrap.zip') != '' }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import zipfile
+          with zipfile.ZipFile('source-bootstrap.zip') as archive:
+              for item in archive.infolist():
+                  path = Path(item.filename)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise SystemExit('Invalid source archive path.')
+                  # The workflow is installed separately through the repository
+                  # UI; the workflow token does not need workflow-write access.
+                  if item.filename.startswith('.github/workflows/') or item.is_dir():
+                      continue
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(archive.read(item))
+                  path.chmod((item.external_attr >> 16) & 0o777 or 0o644)
+          PYCODE
+          git rm source-bootstrap.zip
+          git add --all
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'Establish Value Forge 0.5.0 baseline with complete source and attribution'
+          git push origin HEAD:main
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate stable version tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          version = json.load(open('package.json'))['version']
+          if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+              raise SystemExit('This workflow publishes stable X.Y.Z versions only.')
+          if os.environ['RELEASE_TAG'] != 'v' + version:
+              raise SystemExit('Tag must match package.json: v' + version)
+          lock = json.load(open('package-lock.json'))
+          if lock['version'] != version or lock['packages']['']['version'] != version:
+              raise SystemExit('package-lock.json version must match package.json.')
+          PY
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build native scanner
+        run: npm run build:native
+      - name: Check types, build frontend, and run integration tests
+        run: npm run check
+      - name: Package release assets
+        run: npm run release
+      - name: Publish the tested release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            artifacts/ValueForge.zip \
+            "artifacts/ValueForge-${RELEASE_TAG#v}.zip" \
+            artifacts/SHA256SUMS \
+            --target "$(git rev-parse HEAD)" --latest \
+            --title "Value Forge ${RELEASE_TAG#v}" \
+            --generate-notes
