@@ -16,7 +16,7 @@ const { render, fireEvent, waitFor, act, within } = await import('@testing-libra
 const h = React.createElement;
 const Visibility = React.createContext(true);
 const calls = [];
-const companion = { enabled: false, listening: false, addresses: ['192.168.1.5:52881'], hostname: 'steam.local:52881',
+const companion = { enabled: false, listening: false, addresses: ['192.168.1.5:52881'], hostname: 'steam.local:52881', web_urls: ['https://192.168.1.5:52881/'],
   fingerprint: '0123456789abcdef0123456789abcdef', pairing_code: '', expires_in: 300, devices: [{ id: 'phone-1', name: 'Test phone' }] };
 const nativeListeners = new Set();
 const controllerListListeners = new Set();
@@ -491,11 +491,13 @@ Object.defineProperty(screen.container, 'scrollHeight', { value: 2000, configura
 Object.defineProperty(screen.container, 'clientHeight', { value: 400, configurable: true });
 await waitFor(() => assert.ok(screen.container.scrollTop > 0));
 webAxis = 0;
-fireEvent.click(screen.getByLabelText('Enable phone companion'));
-await waitFor(() => assert.ok(screen.getByRole('button', { name: 'Pair a phone', exact: true })));
-await act(async () => activate(screen.getByRole('button', { name: 'Pair a phone', exact: true })));
+fireEvent.click(screen.getByLabelText('Enable phone & web companion'));
+await waitFor(() => assert.ok(screen.getByRole('button', { name: 'Pair a phone or browser', exact: true })));
+assert.ok(screen.getByText('https://192.168.1.5:52881/'));
+assert.ok(screen.getByText(/Browsers need a one-time local certificate trust step/));
+await act(async () => activate(screen.getByRole('button', { name: 'Pair a phone or browser', exact: true })));
 await waitFor(() => assert.ok(screen.getByText('123456')));
-assert.ok(screen.getByText('0123 4567 89AB CDEF 0123'));
+assert.ok(screen.getByText('0123 4567 89AB CDEF 0123 4567 89AB CDEF'));
 console.log('PASS: phone pairing is enabled and created using controller controls with a visible code and fingerprint.');
 await act(async () => activate(screen.getByRole('button', { name: 'Remove Test phone', exact: true })));
 assert.equal(calls.filter(c => c[0] === 'companion_revoke').length, 0);

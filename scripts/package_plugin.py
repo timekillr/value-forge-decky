@@ -16,7 +16,8 @@ def main():
     args = parser.parse_args()
     package = json.loads((ROOT / 'package.json').read_text())
     for name in ['dist/index.js', 'bin/libscanmem.so.1.0.0', 'main.py', 'session_core.py',
-                 'scanner_worker.py', 'companion_server.py', 'LICENSE', 'README.md', 'THIRD_PARTY.md']:
+                 'scanner_worker.py', 'companion_server.py', 'web/index.html', 'web/app.js',
+                 'web/style.css', 'web/browser-bridge.js', 'LICENSE', 'README.md', 'THIRD_PARTY.md']:
         if not (ROOT / name).is_file():
             raise SystemExit(f'Missing build input: {name}')
     destination = ROOT / 'artifacts'

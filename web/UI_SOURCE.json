@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/timekillr/value-forge-companion",
+  "commit": "9c2035620ac3a8e5e22d282d7c66570bbb9eb216",
+  "version": "0.3.2",
+  "source_sha256": {
+    "app.js": "ebf070b2ca20dfc5339114fdf82e5622d8433c48c8ce832007a5d39d11ff4113",
+    "index.html": "f6f3d662d0f2457c59de6a06e41b96902930fc27a19e86e5bf811fc8a3c2f029",
+    "style.css": "26ea2e7420db20985169368047fca55662f9b1240f9a5577da1576dd591e5718"
+  }
+}

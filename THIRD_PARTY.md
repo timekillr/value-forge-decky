@@ -34,5 +34,14 @@
 - **@decky/rollup 1.0.2** is used as a development/build tool only.
   The plugin uses its current build format; its runtime source is not bundled.
 
+- **Value Forge Companion**, JC / timekillr: GPL-3.0-only.
+  https://github.com/timekillr/value-forge-companion
+  `web/app.js`, the base HTML/CSS, and shared workspace/connection regression
+  suites are imported from Companion 0.3.2, commit
+  `9c2035620ac3a8e5e22d282d7c66570bbb9eb216`. `web/UI_SOURCE.json` records source
+  hashes; `scripts/sync_web_ui.py` reproduces the import. The browser adds only
+  its transport, connection instructions, CSP and safe-area padding. Original
+  Memory Deck/scanmem credits remain visible in the web interface.
+
 Value Forge session-specific code is distributed under the root GPL-3.0 license.
 All original notices in vendored and reference sources remain applicable.

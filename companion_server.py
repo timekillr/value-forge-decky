@@ -3,6 +3,7 @@ import asyncio
 import contextvars
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -13,12 +14,23 @@ import subprocess
 import time
 from collections import OrderedDict
 from pathlib import Path
+from http.cookies import SimpleCookie, CookieError
 from urllib.parse import urlsplit, parse_qs
 
 expected_session = contextvars.ContextVar('companion_session', default=None)
 PROTOCOL = 1
-VERSION = '0.7.0'
+VERSION = '0.8.0'
 PORT = 52881
+WEB_COOKIE = '__Host-ValueForge'
+WEB_ROOT = Path(__file__).resolve().parent / 'web'
+WEB_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+
+class WebResponse:
+    def __init__(self, body, content_type='application/json', headers=None):
+        self.body = body if isinstance(body, bytes) else json.dumps({'ok': True, 'data': body}, allow_nan=False).encode()
+        self.content_type = content_type
+        self.headers = headers or {}
 
 
 class ApiError(Exception):
@@ -167,6 +179,7 @@ class CompanionServer:
         hostname = hostname if hostname.endswith('.local') else hostname + '.local'
         return {'enabled': self.config['enabled'], 'listening': bool(self.server), 'error': self.error,
                 'port': self.port, 'addresses': addresses, 'hostname': f'{hostname}:{self.port}',
+                'web_urls': [f'https://{address}/' for address in addresses] + [f'https://{hostname}:{self.port}/'],
                 'fingerprint': self.fingerprint, 'server_id': self.config['server_id'],
                 'pairing_code': self.pair_code if time.monotonic() < self.pair_deadline else '',
                 'expires_in': max(0, int(self.pair_deadline - time.monotonic())) if self.pair_code else 0,
@@ -175,9 +188,9 @@ class CompanionServer:
 
     def begin_pairing(self):
         if not self.server:
-            raise ValueError('Enable the phone companion connection first.')
+            raise ValueError('Enable the companion connection first.')
         if len(self.config['devices']) >= 8:
-            raise ValueError('Remove a paired device before adding another phone.')
+            raise ValueError('Remove a paired device before adding another phone or browser.')
         self.pair_code = f'{secrets.randbelow(1000000):06d}'
         self.pair_deadline, self.pair_attempts = time.monotonic() + 300, 0
         return self.status()
@@ -288,6 +301,103 @@ class CompanionServer:
             return await self.dispatch(device, data)
         raise ApiError(404, 'Unknown companion endpoint.')
 
+    @staticmethod
+    def local_address(address):
+        """Accept LAN/loopback sources, rather than all of ipaddress.is_private."""
+        try:
+            ip = ipaddress.ip_address(address.split('%')[0])
+            ip = getattr(ip, 'ipv4_mapped', None) or ip
+            networks = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8',
+                        '169.254.0.0/16') if ip.version == 4 else ('fc00::/7', 'fe80::/10', '::1/128')
+            return any(ip in ipaddress.ip_network(network) for network in networks)
+        except (ValueError, AttributeError):
+            return False
+
+    def check_web_request(self, method, url, headers, peer, local):
+        if not peer or not self.local_address(peer[0]):
+            raise ApiError(403, 'The web companion is available only on your local network.')
+        host = headers.get('host', '')
+        # Only this machine's names or the address that accepted the connection.
+        # Never resolve arbitrary Host names: that would permit DNS rebinding.
+        if not host or any(c in host for c in '/\\@#?') or any(c.isspace() for c in host):
+            raise ApiError(403, 'Open the local web address shown in Decky.')
+        try:
+            authority = urlsplit('https://' + host)
+            hostname = socket.gethostname().lower().removesuffix('.local')
+            valid = authority.hostname in {hostname, hostname + '.local', 'localhost'}
+            if not valid:
+                valid = (local is not None and self.local_address(authority.hostname)
+                         and ipaddress.ip_address(authority.hostname) == ipaddress.ip_address(local[0]))
+            if not valid or (authority.port or 443) != self.port:
+                raise ValueError('Unexpected host')
+        except (ValueError, TypeError):
+            raise ApiError(403, 'Open the local web address shown in Decky.')
+        parsed = urlsplit(url)
+        if not url.startswith('/') or parsed.scheme or parsed.netloc or parsed.fragment:
+            raise ApiError(400, 'A local request path is required.')
+        if 'origin' in headers and headers['origin'].lower() != 'https://' + host.lower():
+            raise ApiError(403, 'Use this machine’s own web companion page.')
+        if parsed.path.startswith('/web-api/'):
+            if headers.get('x-value-forge-web') != '1' or headers.get('sec-fetch-site', 'same-origin') != 'same-origin':
+                raise ApiError(403, 'Open the web companion on this machine.')
+            if method == 'POST' and 'origin' not in headers:
+                raise ApiError(403, 'A same-origin browser request is required.')
+
+    @staticmethod
+    def web_cookie(token='', forget=False):
+        return f'{WEB_COOKIE}={token}; Path=/; Max-Age={0 if forget else 31536000}; Secure; HttpOnly; SameSite=Strict'
+
+    def web_device(self, headers):
+        cookies = SimpleCookie()
+        try:
+            cookies.load(headers.get('cookie', ''))
+        except CookieError:
+            raise ApiError(401, 'Pair this browser with the Decky plugin.')
+        token = cookies[WEB_COOKIE].value if WEB_COOKIE in cookies else ''
+        try:
+            return self.authenticate({'authorization': 'Bearer ' + token})
+        except ApiError:
+            raise ApiError(401, 'Pair this browser with the Decky plugin.')
+
+    async def web_route(self, method, url, headers, data, peer, local):
+        self.check_web_request(method, url, headers, peer, local)
+        path = urlsplit(url).path
+        assets = {'/': ('index.html', 'text/html; charset=utf-8'),
+                  '/index.html': ('index.html', 'text/html; charset=utf-8'),
+                  '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                  '/browser-bridge.js': ('browser-bridge.js', 'text/javascript; charset=utf-8'),
+                  '/style.css': ('style.css', 'text/css; charset=utf-8')}
+        if method == 'GET' and path in assets:
+            name, kind = assets[path]
+            return WebResponse((WEB_ROOT / name).read_bytes(), kind)
+        settings = {'paired': False, 'endpoint': headers['host'], 'network_permission': True}
+        if method == 'GET' and path == '/web-api/settings':
+            try:
+                self.web_device(headers)
+                return WebResponse(dict(settings, paired=True))
+            except ApiError:
+                return WebResponse(settings, headers={'Set-Cookie': self.web_cookie(forget=True)})
+        if method == 'POST' and path == '/web-api/pair':
+            paired = self.pair(data)
+            # The browser manages the credential. Never expose it to JavaScript.
+            return WebResponse(dict(settings, paired=True), headers={'Set-Cookie': self.web_cookie(paired['token'])})
+        if not path.startswith('/web-api/'):
+            raise ApiError(404, 'Unknown web companion page.')
+        device = self.web_device(headers)
+        if method == 'POST' and path == '/web-api/unpair':
+            self.revoke(device['id'])
+            return WebResponse(settings, headers={'Set-Cookie': self.web_cookie(forget=True)})
+        if method == 'GET' and path == '/web-api/ping':
+            return WebResponse({'alive': True, 'server_id': self.config['server_id'], 'protocol': PROTOCOL})
+        if method == 'GET' and path == '/web-api/state':
+            refresh = parse_qs(urlsplit(url).query).get('refresh') == ['1']
+            return WebResponse(await self.plugin.get_state(refresh, persist=False))
+        if method == 'GET' and path == '/web-api/processes':
+            return WebResponse({'processes': await self.plugin.get_processes()})
+        if method == 'POST' and path == '/web-api/command':
+            return WebResponse(await self.dispatch(device, data))
+        raise ApiError(404, 'Unknown web companion endpoint.')
+
     async def handle(self, reader, writer):
         task = asyncio.current_task()
         self.handlers.add(task)
@@ -319,7 +429,11 @@ class CompanionServer:
             data = json.loads(body)
             if not isinstance(data, dict):
                 raise ApiError(400, 'A JSON object is required.')
-            result = {'ok': True, 'data': await self.route(method, url, headers, data)}
+            if urlsplit(url).path.startswith('/v1/'):
+                result = {'ok': True, 'data': await self.route(method, url, headers, data)}
+            else:
+                result = await self.web_route(method, url, headers, data,
+                                              writer.get_extra_info('peername'), writer.get_extra_info('sockname'))
         except asyncio.CancelledError:
             raise
         except (ValueError, TypeError, LookupError, ApiError, asyncio.TimeoutError,
@@ -331,8 +445,15 @@ class CompanionServer:
         finally:
             try:
                 if result is not None:
-                    body = json.dumps(result, allow_nan=False).encode()
-                    writer.write(f'HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n'.encode() + body)
+                    body = result.body if isinstance(result, WebResponse) else json.dumps(result, allow_nan=False).encode()
+                    kind = result.content_type if isinstance(result, WebResponse) else 'application/json'
+                    extra = result.headers if isinstance(result, WebResponse) else {}
+                    response_headers = {'Content-Type': kind, 'Content-Length': str(len(body)),
+                                        'Connection': 'close', 'Cache-Control': 'no-store',
+                                        'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
+                                        'Content-Security-Policy': WEB_CSP, 'Referrer-Policy': 'no-referrer', **extra}
+                    head = f'HTTP/1.1 {status} Response\r\n' + ''.join(f'{key}: {value}\r\n' for key, value in response_headers.items())
+                    writer.write(head.encode() + b'\r\n' + body)
                     await writer.drain()
             except (OSError, asyncio.CancelledError):
                 pass

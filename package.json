@@ -1,6 +1,6 @@
 {
   "name": "memory-deck-session",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Value Forge: search memory and organize named address groups for your running game session.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -12,7 +12,8 @@
     "package": "python3 scripts/package_plugin.py",
     "release": "python3 scripts/package_plugin.py --release",
     "test:ui": "node tests/test_ui.mjs",
-    "check": "npm run typecheck && npm run build && npm test && npm run test:ui"
+    "check": "npm run typecheck && npm run build && npm test && npm run test:ui && npm run test:web",
+    "test:web": "node tests/test_web_workspace.mjs && node tests/test_web_connection.mjs && node tests/test_web_bridge.mjs"
   },
   "devDependencies": {
     "@decky/rollup": "1.0.2",

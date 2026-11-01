@@ -1,4 +1,4 @@
-# Value Forge — 0.7.0
+# Value Forge — 0.8.0
 
 A Decky plugin for named groups of memory addresses in a single running game session.
 Built on [Memory Deck](https://github.com/CameronRedmore/memory-deck) by
@@ -11,6 +11,68 @@ Value Forge name. The internal package/folder ID stays `memory-deck-session`
 for upgrade compatibility, so existing saved groups use the same settings.
 After updating from Memory Deck Session, restart Decky Loader once (or reboot)
 to clear the old display name and backend. No uninstall or settings reset is needed.
+
+## Changes in 0.8.0: local web companion
+
+Use a phone, tablet, or computer browser instead of installing the Android app.
+The plugin serves the entire interface itself on your home network, with no
+hosting service, account, subscription, CDN, analytics, or internet dependency.
+It uses the same tested workspace as Companion 0.3.2: process selection, Auto
+and exact-change searches, live scan progress, result Quick edit (one or several
+addresses), saved groups, group writes, individual edits, freeze, labels, moves,
+removal, and current-value refresh. All clients share the same live session.
+
+1. Update the plugin from https://is.gd/valueforge and restart Decky once.
+2. In Decky, enable **Phone & web companion**. If already enabled, leave it on.
+3. On the same home network, open the **HTTPS web address shown in Decky**,
+   for example `https://192.168.1.20:52881/`. The machine must remain awake.
+4. Your browser will warn about the machine's self-signed local certificate.
+   Inspect its certificate details and compare the **SHA-256 fingerprint** with
+   the full value shown in Decky. Trust the local certificate only after this
+   comparison. Browser/device procedures differ; managed browsers may require
+   installing the certificate through their administrator. The web page cannot
+   independently inspect or pin the TLS certificate as the Android app does.
+5. In Decky choose **Pair a phone or browser**, then enter its six-digit code
+   in the web page. Each new browser/app needs its own freshly generated code.
+6. Bookmark that exact address. Pairing is remembered in a secure browser cookie
+   for up to a year, including after restarts. Keep cookies enabled. Clearing
+   site data, private browsing, changing hostname/IP, or browser policies can
+   require pairing again. A stable `.local` hostname can avoid IP changes when
+   supported by your router/device; otherwise reserve the machine's DHCP address.
+
+Use **Connection → Disconnect / Reconnect** to pause/resume. Automatic retries
+stop after ten seconds. Controls appear only on the Connection page. Hidden
+browser tabs stop polling, and returning refreshes values if not disconnected.
+An open page may briefly show old values after sleep until its connection returns.
+**Forget this pairing** requires the machine to be reachable; while offline,
+clear this site's browser data and later remove its device entry in Decky.
+
+The web interface accepts private LAN, loopback, and link-local client addresses
+only. Do not forward port 52881 on your router. Guest Wi-Fi/client isolation or a
+local firewall can prevent devices from reaching one another. It is not a public
+remote-control service. Switching the companion off stops both Android and web
+connections; it does not delete pairings or groups. The existing certificate and
+Android pairings survive this update. The Android app remains version 0.3.2.
+
+Browser credentials are Secure, HttpOnly, SameSite=Strict cookies; JavaScript
+never sees the pairing token. Browser commands require a matching origin and a
+custom header, with no cross-origin access. The server validates the destination
+Host without resolving arbitrary names and serves only an asset allowlist.
+Remove a browser under **Phone & web companion** to revoke it immediately.
+There is no service worker or offline command queue: edits are never replayed
+when a connection returns. See [COMPANION_PROTOCOL.md](COMPANION_PROTOCOL.md).
+
+To update the shared interface from the Companion repository:
+
+```sh
+python3 scripts/sync_web_ui.py /path/to/value-forge-companion
+npm run check
+```
+
+The importer keeps `web/app.js` identical to Android's workspace, records its
+source version/commit/hashes in `web/UI_SOURCE.json`, and imports its full UI and
+connection regression suites. Browser connection help/transport and safe-area
+padding are separate; no Android build is needed for this plugin release.
 
 ## Changes in 0.7.0
 
@@ -350,7 +412,7 @@ npm run check
 npm run package
 ```
 
-The resulting archive is written to `artifacts/ValueForge-0.6.0.zip`.
+The resulting archive is written to `artifacts/ValueForge-0.8.0.zip`.
 The ZIP includes the complete plugin source, native source, tests, lockfile,
 license notices, and compiled outputs. The native build script builds the
 vendored scanmem sources without requiring autotools. Optional Docker build:
